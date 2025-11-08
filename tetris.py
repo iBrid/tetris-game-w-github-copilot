@@ -69,24 +69,57 @@ def next_shape():
     return name, clone_shape(name)
 
 def main():
-    grid = create_grid()
-    bag = []
-    score = 0
-    level = 1
-    fall_time = 0
-    fall_speed = 500  # ms
+    def init_state():
+        grid = create_grid()
+        bag = []
+        score = 0
+        level = 1
+        fall_time = 0
+        fall_speed = 500  # ms
+        cur_name, cur_shape = next_shape()
+        cur_color = COLORS[cur_name]
+        cur_x = C.GRID_WIDTH // 2 - 2
+        cur_y = -2
+        next_name, next_shape_mat = next_shape()
+        return (grid, bag, score, level, fall_time, fall_speed,
+                cur_name, cur_shape, cur_color, cur_x, cur_y,
+                next_name, next_shape_mat)
 
-    cur_name, cur_shape = next_shape()
-    cur_color = COLORS[cur_name]
-    cur_x = C.GRID_WIDTH//2 - 2
-    cur_y = -2
-    # prepare next-piece preview (keep separate variable names so we don't shadow the function)
-    next_name, next_shape_mat = next_shape()
-    # if there's nowhere on the visible grid where this piece can drop, end game
-    if not can_piece_drop_somewhere(grid, cur_shape):
-        running = False
+    (grid, bag, score, level, fall_time, fall_speed,
+     cur_name, cur_shape, cur_color, cur_x, cur_y,
+     next_name, next_shape_mat) = init_state()
 
+    game_over = False
     running = True
+
+    def spawn_next_as_current():
+        nonlocal cur_name, cur_shape, cur_color, cur_x, cur_y, next_name, next_shape_mat, game_over
+        cur_name, cur_shape = next_name, next_shape_mat
+        cur_color = COLORS[cur_name]
+        cur_x = C.GRID_WIDTH // 2 - 2
+        cur_y = -2
+        next_name, next_shape_mat = next_shape()
+        # if the board has blocks in the top row and the newly spawned piece is not visible, game over
+        top_blocked = any(cell is not None for cell in grid[0])
+        spawn_visible = any(y >= 0 for (_, y) in shape_cells(cur_shape, cur_x, cur_y))
+        if top_blocked and not spawn_visible:
+            game_over = True
+
+    def reset_game():
+        nonlocal grid, bag, score, level, fall_time, fall_speed
+        nonlocal cur_name, cur_shape, cur_color, cur_x, cur_y
+        nonlocal next_name, next_shape_mat, game_over
+        (grid, bag, score, level, fall_time, fall_speed,
+         cur_name, cur_shape, cur_color, cur_x, cur_y,
+         next_name, next_shape_mat) = init_state()
+        game_over = False
+
+    # initial spawn visibility check
+    top_blocked = any(cell is not None for cell in grid[0])
+    spawn_visible = any(y >= 0 for (_, y) in shape_cells(cur_shape, cur_x, cur_y))
+    if top_blocked and not spawn_visible:
+        game_over = True
+
     while running:
         dt = clock.tick(C.FPS)
         fall_time += dt
@@ -95,6 +128,17 @@ def main():
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.KEYDOWN:
+                if game_over:
+                    if event.key == pygame.K_r:
+                        reset_game()
+                        continue
+                    elif event.key == pygame.K_ESCAPE:
+                        running = False
+                        break
+                    else:
+                        # ignore other keys while game over
+                        continue
+
                 if event.key == pygame.K_LEFT:
                     if valid_position(grid, cur_shape, cur_x-1, cur_y):
                         cur_x -= 1
@@ -115,18 +159,10 @@ def main():
                     lock_shape(grid, cur_shape, cur_x, cur_y, cur_color)
                     grid, lines = clear_lines(grid)
                     score += lines * 100
-                    # move preview into current piece and generate a new preview
-                    cur_name, cur_shape = next_name, next_shape_mat
-                    cur_color = COLORS[cur_name]
-                    cur_x = C.GRID_WIDTH//2 - 2
-                    cur_y = -2
-                    next_name, next_shape_mat = next_shape()
-                    # if there's nowhere on the visible grid where this piece can drop, end game
-                    if not can_piece_drop_somewhere(grid, cur_shape):
-                        running = False
+                    spawn_next_as_current()
 
-        # automatic fall
-        if fall_time > fall_speed:
+        # automatic fall (only if not game over)
+        if not game_over and fall_time > fall_speed:
             fall_time = 0
             if valid_position(grid, cur_shape, cur_x, cur_y+1):
                 cur_y += 1
@@ -134,15 +170,7 @@ def main():
                 lock_shape(grid, cur_shape, cur_x, cur_y, cur_color)
                 grid, lines = clear_lines(grid)
                 score += lines * 100
-                # move preview into current piece and generate a new preview
-                cur_name, cur_shape = next_name, next_shape_mat
-                cur_color = COLORS[cur_name]
-                cur_x = C.GRID_WIDTH//2 - 2
-                cur_y = -2
-                next_name, next_shape_mat = next_shape()
-                # if there's nowhere on the visible grid where this piece can drop, end game
-                if not can_piece_drop_somewhere(grid, cur_shape):
-                    running = False
+                spawn_next_as_current()
 
         draw_grid(screen, grid)
 
@@ -174,20 +202,19 @@ def main():
                 rect = pygame.Rect(px + x*preview_cell, py + y*preview_cell, preview_cell, preview_cell)
                 pygame.draw.rect(screen, COLORS[next_name], rect.inflate(-2, -2))
 
-        pygame.display.flip()
+        # if game over, draw overlay with restart instructions
+        if game_over:
+            overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            overlay.fill((0,0,0,160))
+            screen.blit(overlay, (0,0))
+            go_surf = font.render("Game Over", True, (255,80,80))
+            instr_surf = font.render("Press R to restart or Esc to quit", True, (220,220,220))
+            score_final = font.render(f"Final Score: {score}", True, (220,220,220))
+            screen.blit(go_surf, (WIDTH//2 - go_surf.get_width()//2, HEIGHT//2 - 40))
+            screen.blit(score_final, (WIDTH//2 - score_final.get_width()//2, HEIGHT//2 - 10))
+            screen.blit(instr_surf, (WIDTH//2 - instr_surf.get_width()//2, HEIGHT//2 + 20))
 
-    # simple game over message then quit
-    go = font.render("Game Over - press Esc or close window", True, (240,240,240))
-    screen.blit(go, (20, HEIGHT//2))
-    pygame.display.flip()
-    # wait until closed
-    done = False
-    while not done:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                done = True
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                done = True
+        pygame.display.flip()
 
     pygame.quit()
     sys.exit()
